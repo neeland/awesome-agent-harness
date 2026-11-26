@@ -48,6 +48,17 @@ python3 scripts/verify_catalog.py
 - Commit generated files together (`README.md`, `README_zh.md`, verification
   report) with your data changes.
 
+GitHub metadata and GitHub repo links are fetched in batched GraphQL queries
+(`scripts/github_meta.py`), so the whole catalog costs a few API requests. This
+needs a token: `GITHUB_TOKEN`, or a logged-in `gh`. Without one, both scripts fall
+back to one request per repository, which unauthenticated GitHub limits to 60 an hour.
+
+Automation (`.github/workflows/`):
+
+- `check.yml` runs on every pull request: schema and README mirrors, no network.
+- `refresh.yml` runs weekly (and by hand): sync, render, verify, then opens or
+  updates a single `chore/catalog-refresh` pull request with the report.
+
 ## Entry schema
 
 Every entry in `data/projects.yaml` must include:

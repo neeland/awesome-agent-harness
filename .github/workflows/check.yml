@@ -1,0 +1,27 @@
+name: check
+# Fast gate on every PR: schema and README mirrors. No network, so it is quick and never flaky.
+# Link health and staleness run weekly in refresh.yml, where a dead upstream link cannot block a contributor.
+on:
+  pull_request:
+    paths: ["data/**", "scripts/**", "README*.md", "requirements.txt", ".github/workflows/check.yml"]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true   # a new push to the same PR replaces the run in progress
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: Schema and README mirrors are in sync with data/projects.yaml
+        run: python scripts/render_readme.py --check

@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+import github_meta
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,6 +103,20 @@ def fetch_repo_with_retry(owner: str, repo: str, token: str | None) -> dict[str,
         raise
 
 
+def from_graphql(node: dict[str, Any]) -> dict[str, Any]:
+    """A GraphQL repository node in the shape of the REST payload the rest of this script reads."""
+    lic = node.get("licenseInfo")
+    return {
+        "full_name": node["nameWithOwner"],
+        "stargazers_count": node.get("stargazerCount", 0),
+        "pushed_at": node.get("pushedAt"),
+        "updated_at": node.get("updatedAt"),
+        "archived": node.get("isArchived", False),
+        "private": node.get("isPrivate", False),
+        "license": {"spdx_id": lic.get("spdxId"), "key": lic.get("key")} if lic else None,
+    }
+
+
 def normalize_license(payload: dict[str, Any]) -> str:
     lic = payload.get("license")
     if not lic:
@@ -141,30 +156,41 @@ def main() -> None:
         except Exception as e:  # pragma: no cover
             return idx, None, f"{owner}/{repo}: {e}"
 
-    done = 0
-    with ThreadPoolExecutor(max_workers=12) as pool:
-        futures = [pool.submit(worker, j) for j in github_jobs]
-        for fut in as_completed(futures):
-            idx, payload, err = fut.result()
-            done += 1
-            if done % 10 == 0 or done == len(github_jobs):
-                print(f"Synced {done}/{len(github_jobs)} ...")
-            if err:
-                warnings.append(err)
-                continue
+    def results():
+        """(idx, payload, err) per job. With a token: batched GraphQL, a few requests for the whole catalog.
+        Without one: the old one-REST-call-per-repo path (60 requests an hour unauthenticated)."""
+        if token:
+            meta = github_meta.fetch_many([(o, r) for _, o, r in github_jobs], token)
+            print(f"Fetched {len(meta)} repos in {-(-len(meta) // github_meta.BATCH)} GraphQL requests")
+            for idx, owner, repo in github_jobs:
+                node = meta.get((owner, repo))
+                yield (idx, from_graphql(node), None) if node else (idx, None, f"{owner}/{repo}: HTTP 404")
+            return
+        done = 0
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            for fut in as_completed([pool.submit(worker, j) for j in github_jobs]):
+                done += 1
+                if done % 10 == 0 or done == len(github_jobs):
+                    print(f"Synced {done}/{len(github_jobs)} ...")
+                yield fut.result()
 
-            assert payload is not None
-            entry = entries[idx]
-            owner, repo = payload["full_name"].split("/", 1)
-            entry["stars_snapshot"] = int(payload.get("stargazers_count", 0))
-            pushed = payload.get("pushed_at") or payload.get("updated_at") or ""
-            entry["updated_at"] = pushed.split("T")[0] if pushed else "1970-01-01"
-            entry["license"] = normalize_license(payload)
-            if payload.get("archived"):
-                warnings.append(f"archived repo: {owner}/{repo}")
-            if payload.get("private"):
-                warnings.append(f"private repo: {owner}/{repo}")
-            updated += 1
+    for idx, payload, err in results():
+        if err:
+            warnings.append(err)
+            continue
+
+        assert payload is not None
+        entry = entries[idx]
+        owner, repo = payload["full_name"].split("/", 1)
+        entry["stars_snapshot"] = int(payload.get("stargazers_count", 0))
+        pushed = payload.get("pushed_at") or payload.get("updated_at") or ""
+        entry["updated_at"] = pushed.split("T")[0] if pushed else "1970-01-01"
+        entry["license"] = normalize_license(payload)
+        if payload.get("archived"):
+            warnings.append(f"archived repo: {owner}/{repo}")
+        if payload.get("private"):
+            warnings.append(f"private repo: {owner}/{repo}")
+        updated += 1
 
     # Keep deterministic ordering for mirrors.
     category_order = [c["name_en"] for c in catalog.get("categories", [])]

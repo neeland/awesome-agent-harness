@@ -12,8 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+import github_meta
 import yaml
-
 from render_readme import (
     DATA_FILE,
     README_EN,
@@ -176,8 +176,23 @@ def main() -> None:
     broken: list[tuple[str, str]] = []
     links = gather_links() if not args.skip_links else []
     if not args.skip_links:
+        # Plain GitHub repository links are checked through the API in a few batched queries (the same data
+        # sync_github_metadata.py reads). Fetching ~340 github.com pages one by one is slow and gets a crawler
+        # rate-limited. Everything else, or everything when there is no token, is fetched over HTTP.
+        http_links = links
+        token = github_meta.get_token()
+        if token:
+            repo_links = {u: github_meta.parse_repo(u) for u in links if github_meta.parse_repo(u)}
+            meta = github_meta.fetch_many(list(repo_links.values()), token)
+            for url, key in repo_links.items():
+                if meta.get(key):
+                    reachable.append((url, "API 200"))
+                else:
+                    broken.append((url, "API 404"))
+            http_links = [u for u in links if u not in repo_links]
+            print(f"Checked {len(repo_links)} GitHub repo links via API, {len(http_links)} other links via HTTP")
         with ThreadPoolExecutor(max_workers=16) as pool:
-            futures = [pool.submit(check_url, u) for u in links]
+            futures = [pool.submit(check_url, u) for u in http_links]
             for fut in as_completed(futures):
                 url, ok, detail = fut.result()
                 if ok:
