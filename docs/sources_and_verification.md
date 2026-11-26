@@ -32,7 +32,7 @@ Verification covers:
 - duplicate names/links
 - GitHub entry activity window (last 12 months)
 - mirror consistency across README files
-- external link reachability (`HEAD`, then `GET` fallback)
+- external link reachability: GitHub repo links through the GraphQL API in batches, other links by `HEAD`, then `GET` fallback
 - category counts and GitHub ratio:
   - project categories (excluding readings) target `>= 90%`
   - overall ratio reported for transparency
@@ -40,3 +40,6 @@ Verification covers:
 Reports are written to:
 
 - `reports/verification/YYYY-MM-DD.md`
+
+The weekly `refresh` workflow runs all three and opens a pull request; `check`
+runs the schema and mirror check on every pull request.

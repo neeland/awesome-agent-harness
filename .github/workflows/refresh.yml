@@ -1,0 +1,50 @@
+name: refresh
+# Weekly: refresh stars, dates and licences, re-render the READMEs, verify links, and open (or update) one PR.
+# Metadata comes from batched GraphQL (scripts/github_meta.py): a few requests for the whole catalog.
+on:
+  schedule:
+    - cron: "17 3 * * 1"     # Mondays 03:17 UTC, off the hour to avoid the scheduler's busiest minutes
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BRANCH: chore/catalog-refresh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - run: python scripts/sync_github_metadata.py | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: python scripts/render_readme.py
+      - name: Verify (findings go in the report and the PR; they do not stop the refresh)
+        id: verify
+        continue-on-error: true
+        run: python scripts/verify_catalog.py
+      - name: Open or update the refresh PR
+        run: |
+          git diff --quiet && { echo "Nothing changed." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git add data README.md README_zh.md reports
+          git commit -q -m "chore(catalog): weekly metadata refresh $(date -u +%F)"
+          git push -f origin "$BRANCH"      # one rolling branch: a missed week updates the open PR, never piles up
+          report="reports/verification/$(date -u +%F).md"
+          body="Automated weekly refresh. Verification: **${{ steps.verify.outcome }}**. Full report: \`$report\`."
+          gh pr view "$BRANCH" --json state -q .state 2>/dev/null | grep -q OPEN \
+            && gh pr edit "$BRANCH" --body "$body" \
+            || gh pr create --head "$BRANCH" --base "${{ github.event.repository.default_branch }}" \
+                 --title "chore(catalog): weekly metadata refresh" --body "$body"
