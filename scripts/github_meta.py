@@ -34,7 +34,7 @@ def get_token() -> str | None:
         return os.getenv("GITHUB_TOKEN")
     try:
         return subprocess.check_output(["gh", "auth", "token"], text=True, stderr=subprocess.DEVNULL).strip() or None
-    except Exception:
+    except (OSError, subprocess.CalledProcessError):  # gh missing, or not logged in
         return None
 
 
